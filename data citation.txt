@@ -1,0 +1,1 @@
+Unknown Author, healthcare-dataset-stroke-data[Data set]. Retrieved from https://www.kaggle.com/datasets/fedesoriano/stroke-prediction-dataset

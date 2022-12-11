@@ -1,0 +1,530 @@
+---
+title: "Final Project: Building a Stroke Prediction Model"
+author: 
+- Camilla Zhai
+- UCSB Fall 2022
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float:
+      collapsed: True
+      smooth_scroll: True
+      font-family: Helvetica
+---
+```{r echo=FALSE, out.width='70%'}
+knitr::include_graphics('/Users/weiqizhai/Desktop/pic.png')
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+# Introduction  
+This project's goal is to create a machine learning model that can predict whether or not an individual will suffer a stroke. To construct the best accurate model for this problem, we will employ a variety of machine learning techniques.
+
+# Loading Packages and Setting Up The Environment  
+Let's load the R packages we'll need for the rest of this project.
+```{r ,message=FALSE, warning=FALSE}
+#knitr::opts_chunk$set(eval = FALSE)
+#load packages
+library(tidymodels) #mostly using tidyverse and tidymodels for this project
+library(tidyverse)
+library(ISLR)
+library(ISLR2)
+library(dplyr) # for basic r functions
+library(ggplot2) #for data visualizations
+library(glmnet) # for Elastic-Net Regularized Generalized Linear Models
+library(klaR) # for classification and visualization
+library(corrr) # for getting correlations
+library(corrplot) # for the correlation plot
+library(discrim) # for Discriminant Analysis
+library(janitor) # for cleaning out our data
+library(ROSE) # for treating imbalanced data
+library(patchwork)
+library(kknn) # for nearest neighbors
+library(reactable)  # for
+tidymodels_prefer()
+#set seed
+set.seed(1018)
+```
+
+# Exploratory Data Analysis
+Before building our models, we need to know what our data really looks like. The dataset we'll be working with isn't flawless or ready for use: it may contain parts that are problematic for building a good model, such as missing values or unbalanced data, or it may contain messy stuff, such as variables of the wrong type... So we need to find them out and clean them up! In this section, we will manipulate and clean up our data before analyzing some of the major variables with visualizations and other tools.
+
+## Loading Data
+The dataset that will be using in this project was downloaded from [Kaggle](https://www.kaggle.com/fedesoriano/stroke-prediction-dataset). Let's read the CSV file and take a peek at the data.
+```{r,message=FALSE}
+#read in data
+stk_data <- read_csv(file='/Users/weiqizhai/Desktop/healthcare-dataset-stroke-data.csv')
+```
+```{r}
+stk_data%>% head()
+```
+
+## Cleaning Data
+Let's get started cleaning up this dataset.  
+Checking the missing value:
+There are 201 missing observations out of 5110 in this dataset, and they are all in the 'bmi' variable; we can now remove them from the dataset.
+```{r}
+dim(stk_data) # count the total number of observations
+sum(is.na(stk_data)) # count all missing observations 
+colSums(is.na(stk_data)) # count the number of missing values in each column
+```
+```{r}
+stk_data1<- stk_data %>% drop_na() # dropping missing values
+```
+
+I noticed that there is only one observation with the gender 'Other'; because its presence has no statistical relevance, we should eliminate it from the dataset as well.
+```{r}
+stk_data1<-subset(stk_data1, gender!="Other")
+```
+After the cleaning, we obtain a data set with over 4900 observations.  
+```{r}
+dim(stk_data1)  #getting the dimension of the dataset
+```
+Here is the list of all the variables we got: 
+  
+* stroke: 1 if the patient had a stroke or 0 if not
+* gender: "Male" or "Female"
+* age: age of the patient
+* hypertension: 0 if the patient doesn't have hypertension, 1 if the patient has hypertension
+* heart_disease: 0 if the patient doesn't have any heart diseases, 1 if the patient has a heart disease
+* ever_married: "No" or "Yes"
+* work_type: "children", "Govt_jov", "Never_worked", "Private" or "Self-employed"
+* Residence_type: "Rural" or "Urban"
+* avg_glucose_level: average glucose level in blood
+* bmi: body mass index
+* smoking_status: "formerly smoked", "never smoked", "smokes" or 'Unknown' 
+* id: unique identifier
+
+Next, we are going to:  
+-->clean variable names
+```{r}
+# making variable names consistent 
+stk_data1 <- stk_data1 %>% clean_names()
+```
+
+-->deselect unimportant variables
+```{r,eval=FALSE}
+# exclude id from our dataset
+stk_data1 <- stk_data1 %>% select(-id)
+stk_data1
+```
+
+-->factorize categorical and numeric variables
+```{r}
+stk_data1$gender <- factor(stk_data1$gender)
+stk_data1$hypertension <- factor(stk_data1$hypertension)
+stk_data1$heart_disease <- factor(stk_data1$heart_disease)
+stk_data1$ever_married <- factor(stk_data1$ever_married)
+stk_data1$work_type <- factor(stk_data1$work_type)
+stk_data1$residence_type <- factor(stk_data1$residence_type)
+stk_data1$smoking_status <- factor(stk_data1$smoking_status)
+stk_data1$stroke <- factor(stk_data1$stroke)
+```
+
+--->balancing data  
+Our data is severely imbalanced because there are 4699 observations with stroke value 0 and 209 observations with stroke value 1. To address this, we will utilize a function in the ROSE package to generate data synthetically while retaining the original data set's total number of observations.
+```{r}
+table(stk_data1$stroke) #getting the number of observations for each level in stroke
+```
+
+Now, we obtain a clean dataset with 2517 observations for stroke value 0 and 2391 observations for stroke value 1, for a total of 4908 observations with 11 variables.
+```{r}
+stk_data_1 <- ROSE(stroke ~ ., data = stk_data1, seed = 1)$data
+table(stk_data_1$stroke)
+```
+```{r}
+dim(stk_data_1) # getting the dimension of the dataset
+```
+Our data is clean and ready for further analysis. Let's use visualizations to investigate the relationship between our variables before moving on to model building.
+
+## Visual EDA  
+Now, let's visualize the distribution of our outcome variable "stroke" using bar plot.  
+
+### Visualize 'stroke' Distribution 
+The outcome is consistent with what we got in the "balancing data" section.
+```{r}
+stk_data_1 %>% ggplot(aes(x=stroke))+
+  geom_bar()  
+```
+
+Then, let's do a correlation heat map of all continuous variables to get an idea of their relationship.   
+
+### Variable Correlation Plot  
+From the plot, we can see that the average glucose level in the blood (avg glucose level) is positively correlated with both age and body mass index (bmi). bmi and age are also positively correlated with each other.
+This means that people with higher average glucose levels in their blood are older and more likely to have a higher BMI, and vice versa. Also, people who are older are more likely to have a higher BMI, and vice versa.
+Their relations make sense to me intuitively.
+```{r}
+num_data<- stk_data_1 %>% select_if(is.numeric) # getting the numeric data
+stk_cor <- cor(num_data) #calculating the correlation between each variable
+stk_cor_plt <- corrplot(stk_cor,order='AOE') # plotting correlation plot
+
+```
+  
+Let's make some scatterplots to investiage the correlation between average blood glucose level (avg glucose level), body mass index (bmi), and age.  
+
+### Variable Scatterplot  
+The trend line in the graph shows that the positive correlation of average glucose level in blood (avg glucose level) with age and bmi is non-linear. The trend line in the scatterplot of age vs bmi is also non-linear, resembling a parbolic curve in which bmi decreases after a certain age; however, their correlation remains positive.
+
+```{r, message=FALSE, warning=FALSE}
+p1<-stk_data_1 %>% 
+  ggplot(aes(age,avg_glucose_level)) +
+  geom_point() +
+  geom_jitter()+
+  geom_smooth(color='red')  # adding trend line to the scatterplot
+p2<-stk_data_1 %>% 
+  ggplot(aes(avg_glucose_level,bmi)) +
+  geom_point() +
+  geom_jitter()+
+  geom_smooth(color='red')
+p3<-stk_data_1 %>% 
+  ggplot(aes(age,bmi)) +
+  geom_point() +
+  geom_jitter()+
+  geom_smooth(color='red')
+p1+p2+p3   # putting three scatterplots side by side
+```
+
+
+Now, we'll make a bar-plot for some predictors to examine their relationship with our outcome variable'stroke' to see what values will significantly alter our model.
+
+###  Variable Barplot  
+
+* Gender  
+Gender has little effect on whether or not a person has a stroke, as the rates do not differ significantly between male and female.
+```{r,out.width='75%'}
+ggplot(stk_data_1,aes(gender))+
+  geom_bar(aes(fill=stroke)) 
+```
+  
+* Hypertension  
+We can clearly see that people with hypertension are more likely to have a stroke than people who don't, as the proportion of people with hypertension who have a stroke is substantially higher than the proportion of people who don't.
+```{r,out.width='75%'}
+ggplot(stk_data_1,aes(hypertension))+
+  geom_bar(aes(fill=stroke)) 
+```
+  
+* Heart Disease  
+According to the graph, people with heart disease are more likely to have a stroke than people who don't, because the proportion of people with heart disease who have a stroke is substantially higher than the proportion of people who don't.
+```{r,out.width='75%'}
+ggplot(stk_data_1,aes(heart_disease))+
+  geom_bar(aes(fill=stroke)) 
+```
+  
+* Marital Status  
+Based on the graph, people who have been married are more likely to have a stroke than people who have never been married. This is because the proportion of individuals who have been married who have had a stroke is much higher than the proportion of people who have never been married who have had a stroke.
+```{r,out.width='75%'}
+ggplot(stk_data_1,aes(ever_married))+
+  geom_bar(aes(fill=stroke)) 
+```
+  
+* Work Type  
+From the graph, we can see that self-employed people are more likely to have a stroke than people in other types of jobs. People who work for private companies and the government have about the same chance of having a stroke. Children are less likely to have a stroke than people in other types of jobs (adult).
+
+```{r,out.width='75%'}
+ggplot(stk_data_1,aes(work_type))+
+  geom_bar(aes(fill=stroke)) 
+```
+  
+* Residence Type  
+It looks like the proportion of individuals who have a stroke stays the same in both rural and urban areas.
+This goes against what I thought at first, because I thought that people who live in cities are much more likely to have a stroke than people who live in the country.
+```{r,out.width='75%'}
+ggplot(stk_data_1,aes(residence_type))+
+  geom_bar(aes(fill=stroke)) 
+```
+  
+* Smoking Status  
+It looks like about the same proportion of former smokers and current smokers have strokes, which is more than those who have never smoked.
+```{r,out.width='75%'}
+ggplot(stk_data_1,aes(smoking_status))+
+  geom_bar(aes(fill=stroke)) 
+```
+
+# Setting Up Models  
+It's time to set up our models! We have a general idea of how most variables influence an individual's chance of suffering a stroke, so let's run our train/test split, construct our recipe, and establish Cross Validation to help with the creation of our models.
+  
+## Train/Test Split  
+I decided to split this data into 80% training data and 20% testing data. The training data will be used to build and train our model, and the testing data will be used to fit our best-performing model once we find it. We also need to set a random seed to make sure that the train/test split is the same every time we run the code. In addition to this, we stratify based on the response variable "stroke."
+```{r}
+set.seed(2022)  # setting a random seed
+stk_split <- stk_data_1 %>%
+  initial_split(prop=0.8,strata='stroke')
+train_set <- training(stk_split)
+test_set <- testing(stk_split)
+```
+  
+As you can see below, we got 3925 observations in the training dataset and 983 observations in the testing dataset.
+```{r}
+dim(train_set)
+dim(test_set)
+```
+
+## Recipe Building  
+Now we'll create a recipe that all of our models can use. We build our recipe using all of the predictor variables. All categorical predictors will be dummy encoded, and our data will be centered and scaled for model use.
+
+```{r}
+stk_recipe <-   # building the recipe
+  recipe(stroke~gender+age+hypertension+heart_disease+ever_married+work_type+residence_type+avg_glucose_level+
+         bmi+smoking_status, data=stk_data_1) %>%
+  step_dummy(all_nominal_predictors()) %>% # dummy encode categorical predictors
+  step_center(all_predictors()) %>%   # standardizing our predictors
+  step_scale(all_predictors())
+```
+
+## K-Fold Cross Validation  
+Let's fold the training data using k_fold cross validation with k=10, and we are stratifying on our response variable 'stroke'.
+```{r}
+stk_folds <- vfold_cv(train_set, v = 10, strata = stroke)  # 10-fold CV
+```
+  
+
+# Model Building
+We will try out 6 different machine learning techniques using the same recipe.
+Here, I chose roc auc as the performance metric because it shows the most important level of efficiency in a binary classification model where the data is not perfectly balanced. The area under the ROC curve, which is what roc auc stands for, shows how true positives and false positives compare. A model that does better has a higher value for roc_auc.
+Almost every model was built in the same fashion, so I'll list the general steps below:
+
+* Step 1: Set up the model by choosing its type, engine, and mode.
+* Step 2: Set up the workflow and add a new recipe and model.
+* Step 3: Set up the tuning grid with the parameters that we want to tune, and how many different levels of tuning.
+* Step 4: Tune the model with the chosen parameters.
+* Step 5: Select the best performing model from all of the tuning.
+* Step 6: Finalize the workflow with the tuning parameters of the most accurate model.
+* Step 7: Use the training data to fit this model to our finalized work flow.
+* Step 8: Save the results to an RDA file.  
+
+Note: Step3-5 were skipped for Logistic Regression and LDA
+
+## Random Forest  
+I tuned mtry, trees, and min n, set mode to "classification," and used the ranger engine. Then I made the workflow and put the recipe and model in it.
+```{r, eval=FALSE}
+rf_spec <- rand_forest(mtry = tune(),trees=tune(), min_n=tune()) %>%  #setting up model
+  set_engine("ranger") %>%
+  set_mode("classification")  
+
+rf_workflow <- workflow() %>%   # setting up workflow
+  add_model(rf_spec) %>% 
+  add_recipe(stk_recipe)
+```
+Next, I updated the parameters by setting a range for them. I also set up a tuning grid with 10 levels given that our data is not massive.Then, I executed my model by tuning and fitting.
+```{r,eval= FALSE}
+
+rf_params<-parameters(rf_spec) %>%   # updating parameters
+  update(mtry = mtry(range= c(1, 10)),min_n=min_n(range=c(1,40)),
+                                   trees=trees(range=c(10,600)))
+rf_grid <- grid_regular(rf_params, level=10)  # defining grid
+rf_tune<- rf_workflow%>% tune_grid(resamples=stk_folds, grid=rf_grid, #tuning the model
+                                   metrics = metric_set(roc_auc))
+```
+Then, I selected the best performing model and used it to finalize the workflow; After this, I used the training data to fit this model to the finalized work flow.
+```{r,eval=FALSE}
+rf_best <- select_best(rf_tune,metric='roc_auc')  # selecting best performing model
+rf_final <- finalize_workflow(rf_workflow,rf_best) #finalizing the workflow
+rf_final_fit<-fit(rf_final,data=train_set) # fitting training data to the finalized work flow
+```
+Finally, I wrote out some results to a RDA file so that I could access them later without having to refit the model.
+```{r,,eval= FALSE}
+# write out the results to a RDA file
+save(rf_tune, rf_final,rf_final_fit, file='rftune.rda')
+```
+
+## Decision Tree Model  
+Again, I set the model with one tuning parameter, "cost complexity," and added "rpart" and "classification" to the engine and mode. Then I updated the parameter by giving it a range. I also made a 10 level tuning grid and ran my model by tuning and fitting. Still, I wrote out the results to a RDA file so I could look them up later.
+```{r,eval= FALSE}
+dt_spec <- decision_tree(cost_complexity = tune()) %>%  # setting up model
+  set_engine('rpart')%>% 
+  set_mode("classification")
+dt_wf <- workflow() %>% add_model(dt_spec) %>%   # setting up workflow
+  add_recipe(stk_recipe)
+dt_grid <- grid_regular(cost_complexity(range = c(-3, -1)) , levels = 10) #defining grid
+dt_tune <- tune_grid(    #tuning the model
+  dt_wf, 
+  resamples = stk_folds, 
+  grid = dt_grid, 
+  metrics = metric_set(roc_auc)
+)
+dt_best <- select_best(dt_tune,metric='roc_auc')  # selecting best performing model
+dt_final <- finalize_workflow(dt_wf,dt_best) #finalizing the workflow
+dt_final_fit<-fit(dt_final,data=train_set) # fitting training data to the finalized work flow
+# write out the results to a RDA file
+save(dt_tune, dt_final,dt_final_fit, file='dttune.rda')
+```
+
+## Nearest Neighbors  
+In a similar process, I set the model with one tuning parameter 'neighbors'; I also added engine 'kknn' and mode 'classification'. Then,I set up a tuning grid with 10 levels and executed my model by tuning and fitting. Still, I wrote out the results so I could access them later.
+```{r,eval= FALSE}
+knn_mod <- nearest_neighbor(neighbors = tune()) %>% set_engine("kknn") %>% set_mode('classification') # setting up model
+knn_wf <- workflow() %>% add_model(knn_mod) %>% add_recipe(stk_recipe) #creating workflow
+knn_grid <- grid_regular(parameters(knn_mod), level=10) # defining grid
+knn_tune <- tune_grid(knn_wf,resamples = stk_folds, grid = knn_grid, metrics=metric_set(roc_auc)) # tuning the model
+knn_best <- select_best(knn_tune,metric='roc_auc')  # selecting best performing model
+knn_final <- finalize_workflow(knn_wf,knn_best) #finalizing the workflow
+knn_final_fit<-fit(knn_final,data=train_set)
+#write out the results to a RDA file
+save(knn_tune, knn_final, knn_final_fit, file='knntune.rda')
+```
+
+## Elastic Net  
+Again, I set the model with two tuning parameter 'penalty' and 'mixture'; I also added engine 'glmnet' and mode 'classification'. Then, I updated the parameter by setting a range for it. I also set up a tuning grid with 10 levels and executed my model by tuning and fitting. Still, I wrote out the results to an RDA file.
+```{r,eval= FALSE}
+en_spec <- multinom_reg(penalty = tune(),              #setting up model
+                                 mixture = tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("glmnet")
+en_wf <- workflow() %>%        # creating workflow
+  add_recipe(stk_recipe) %>% 
+  add_model(en_spec)
+en_grid <- grid_regular(penalty(range = c(-5, 5)),     # defining grid
+                        mixture(range = c(0, 1)), levels = 10)
+en_tune <- tune_grid(                 # tuning the model
+  en_wf,
+  resamples = stk_folds, 
+  grid = en_grid
+)
+en_best <- select_best(en_tune,metric='roc_auc')  # selecting best performing model
+en_final <- finalize_workflow(en_wf,en_best) #finalizing the workflow
+en_final_fit<-fit(en_final,data=train_set)
+# write out the results to a RDA file
+save(en_tune, en_final,en_final_fit, file='entune.rda')
+```
+
+
+## Logistics Regression  
+I added engine 'glmnet' and mode 'classification'.  
+After creating a workflow for this model, I fitted it across many resamples to obtain its performance.
+Still, I wrote out the results to an RDA file.
+```{r,eval= FALSE}
+log_reg <- logistic_reg() %>%  # setting up model
+  set_engine('glm') %>%
+  set_mode('classification')
+log_wf <- workflow() %>%    #creating a workflow
+  add_model(log_reg) %>% 
+  add_recipe(stk_recipe)
+log_fit <- fit_resamples(log_wf,stk_folds)  # fitting our model and recipe across different resamples
+log_fit_train<- fit(log_wf, train_set)  #fitting training data to the work flow
+# write out the results to a RDA file
+save(log_fit, log_wf,log_fit_train, file='log.rda')
+```
+
+## Linear Discriminant Analysis(LDA)  
+I added engine 'MASS' and mode 'classification'.  
+After creating a workflow for this model, I fitted it across many resamples to obtain its performance.
+Still, I wrote out the results to an RDA file.
+```{r,eval= FALSE}
+lda_mod <- discrim_linear() %>%    # setting up model
+  set_engine("MASS") %>% 
+  set_mode("classification")
+lda_wf <- workflow() %>%      #creating a workflow
+  add_recipe(stk_recipe) %>% 
+  add_model(lda_mod)
+lda_fit <- fit_resamples(resamples=stk_folds,lda_wf,control=control_resamples())  # fitting the model across different resamples
+lda_fit_train<- fit(lda_wf, train_set)  #fitting training data to the work flow
+# write out the results to a RDA file
+save(lda_fit, lda_wf,lda_fit_train, file='lda.rda')
+```
+  
+  
+Now, Let's take a look of how our models perform. I'm getting excited!  
+
+# Results of Models  
+Let's first load the results saved in RDA files to R.
+```{r}
+load('/Users/weiqizhai/Desktop/rftune.rda')   #loading the results into R
+load('/Users/weiqizhai/Desktop/knntune.rda')
+load('/Users/weiqizhai/Desktop/entune.rda')
+load('/Users/weiqizhai/Desktop/dttune.rda')
+load('/Users/weiqizhai/Desktop/log.rda')
+load('/Users/weiqizhai/Desktop/lda.rda')
+```
+
+## Model Autoplots  
+One of the most useful tools for visualizing the results of tuned models is R's autoplot function. This will show the effects of changing certain parameters on our chosen metric (roc_auc).
+
+### Random Forest Plot  
+As we can see from the plot, the accuracy increases until the number of predictors reaches 5 (it reaches its peak at 5), after which it begins to decrease. Furthermore, as the minimal node size increases, so does the highest accuracy within each plot. The first plot appears to have featured our most accurate model, with approximately 305 trees, 5 randomly selected predictors, and a minimal node size of around 1.
+```{r}
+autoplot(rf_tune)
+```
+
+### Decision Tree Plot
+The plot shows that as the cost-complexity parameter increases, roc_auc decreases. The highest roc_auc is around 0.83 when the cost-complexity is 0.001.
+```{r}
+autoplot(dt_tune)
+```
+
+### Nearest Neighbors
+The value of roc_auc increases as the number of Nearest Neighbors increases until it reaches 8. Following that, as the number of Nearest Neighbors increases, roc_auc decreases; at 8 Nearest Neighbors, roc_auc reaches its maximum value of around 0.93.
+```{r}
+autoplot(knn_tune)
+```
+
+### Elastic Net  
+We can see that if we ignore the proportion of lasso penalty, the roc_auc and accuracy basically remain the same as the value of the amount of regularization (lamda) increases; after a certain value of lamda, the roc_auc and accuracy begin to decrease and continue to decrease as the value of the amount of regularization increases. When we consider the lasso penalty proportion, we can see from the plot that smaller values of penalty and mixture produce better roc_auc and accuracy.
+```{r}
+autoplot(en_tune)
+```
+
+## Accuracy of Our Models  
+To better compare the six best ROC AUC scores for each model, I created a tibble that gives the estimate for the optimal ROC AUC for each technique.  
+```{r}
+#estimating the ROC_AUC of each model on the training data
+log_auc <- augment(log_fit_train, new_data=train_set) %>% roc_auc(stroke, estimate=.pred_0) %>% select(.estimate)
+lda_auc <- augment(lda_fit_train, new_data=train_set) %>% roc_auc(stroke, estimate=.pred_0) %>% select(.estimate)
+en_auc <- augment(en_final_fit, new_data=train_set)   %>% roc_auc(stroke, estimate=.pred_0) %>% select(.estimate)
+knn_auc <- augment(knn_final_fit, new_data=train_set) %>% roc_auc(stroke, estimate=.pred_0) %>% select(.estimate)
+rf_auc <- augment(rf_final_fit, new_data=train_set)   %>% roc_auc(stroke, estimate=.pred_0) %>% select(.estimate)
+dt_auc <- augment(dt_final_fit, new_data=train_set)   %>% roc_auc(stroke, estimate=.pred_0) %>% select(.estimate)
+stk_roc_aucs <- c(log_auc$.estimate,lda_auc$.estimate,en_auc$.estimate,knn_auc$.estimate,rf_auc$.estimate,dt_auc$.estimate)
+stk_names <- c('Logistic Regression','LDA','Elastic Net','K-Nearest Neighbor','Random Forest','Decision Tree')
+stk_results <- tibble(Model=stk_names,   # building a tibble
+                      ROC_AUC= stk_roc_aucs)
+stk_results <- stk_results %>% arrange(-stk_roc_aucs)
+stk_results
+```
+Here I also created a barplot of each model's performance.
+```{r}
+stk_barplot <- ggplot(stk_results, aes(x = Model, y = ROC_AUC)) + 
+  geom_bar(stat = "identity", width=0.2, fill='darkblue') + labs(title = "Performance of Our Models") + 
+  theme_minimal()
+stk_barplot
+```
+
+According to these two graphs, all of our six models perform reasonably well, with ROC AUCs of greater than 0.83 across the board, but K-Nearest Neighbor and Random Forest appear to outperform the others. The first plot shows that K-Nearest Neighbor had a ROC AUC of 0.965, indicating that its prediction on the training data was 96.5% correct, so the K-Nearest Neighbor Model will be used to fit our testing data.
+
+# Analysis of The Test Set  
+## Prediction VS. Actual Value
+Let's apply our K-Nearest Neighbor model to the testing data and make predictions for every observation in the testing set.
+I placed the actual values alongside our predicted values to better compare them.
+```{r}
+stk_predict <- predict(knn_final_fit, new_data=test_set, type='class')  #fitting our K-Nearest Neighbor Model to the testing set and making predictions on it
+predict_and_actual <- stk_predict %>% bind_cols(test_set)  # adding the actual value to our predicted values
+
+reactable(predict_and_actual)  # making the table interactive in HTML
+
+```
+## ROC Curve  
+The ROC curve depicts the trade-off between sensitivity and specificity; a ROC curve closer to the top-left corner indicates that the model performed better. As a result, we want our ROC curve to move as far up and to the left as possible. According to the plot below, our ROC curve did a good job reaching the top-left!
+```{r}
+stk_roc <- augment(knn_final_fit, new_data = test_set) %>%
+  roc_curve(stroke, estimate = .pred_0)  # creating the ROC curve for this model
+autoplot(stk_roc)
+```
+
+## ROC AUC  
+Lastly, we are going to see the value of our final ROC_AUC.
+```{r}
+augment(knn_final_fit, new_data=test_set) %>% roc_auc(stroke, estimate=.pred_0) %>% select(.estimate)
+```
+On our testing data, our model's ROC AUC was 0.93, which is a little bit less than the ROC AUC on our training data, which was 0.965. This means our model did a good job not overfitting to the training data. Furthermore, a ROC AUC of 0.93 is considered excellent for measuring model performance. This means that our best performing model predicts the response variable stroke on the testing data with 93% accuracy. Yes! We did it!  
+  
+    
+      
+# Conclusion  
+We conducted extensive research on our data throughout this project. We begin our Exploratory Data Analysis (EDA) on the raw data by performing some manipulations such as cleaning miss values, removing unimportant variables, factorizing categorical variables, and balancing the data, with the goal of tidying our raw data for further exploration of variable relationships, which were visually examined using bar plots, correlation heat maps, and scatterplots. Following that, we divided our tidy data into training and testing sets with an 80/20 split and used 10-fold cross validation to fold the training set; finally, we built one recipe that will be used throughout the model building process. We used six different machine learning techniques to build models: Random Forest, K-Nearest Neighbor, Decision Tree, Linear Discriminant Analysis (LDA), Logistic Regression, and Elastic Net. We plotted some graphs to visualize the performance of our models once more. Fortunately, it didn't take long to determine the best performing model, which is the K-Nearest Neighbor Model, and all six of our models perform reasonably well, with ROC AUCs greater than 0.83 across the board. When we fit the best model to the testing set, the ROC AUC value shows that our model was not overfitting to the training data and performs well on the testing data.
+
+Overall, this Stroke Prediction Model gave me an excellent opportunity to gain experience and skills in machine learning techniques. With this experience, I became more confident in applying machine learning and other professional knowledge to address real-world issues and make a positive difference in society.
+
+
+
+
+
+
